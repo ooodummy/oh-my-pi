@@ -17,9 +17,14 @@ import {
 	type RenderResultContextOptions,
 	type ToolActivitySummary,
 	type ToolRenderer,
+	type ToolRendererFactory,
 	toolRenderers,
 } from "../tools/index";
-import { describeDefaultToolExecution, formatDefaultToolExecution } from "../tools/default-renderer";
+import {
+	describeDefaultToolExecution,
+	formatDefaultToolExecution,
+	renderDefaultToolExecution,
+} from "../tools/default-renderer";
 import { INTENT_FIELD, type TspCardStatus, type TspPreview, type TspText, type TspTone } from "@oh-my-pi/pi-wire";
 import { card, col, EMPTY_NODE, node, span, text, withHidden } from "../native/describe";
 import {
@@ -46,7 +51,7 @@ import {
 	replaceTabs,
 	resolveImageOptions,
 } from "../render/render-utils";
-import type { XdevMountedState } from "../tools/xdev";
+import type { XdevMountedRenderer, XdevMountedState } from "../tools/xdev";
 import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../render/index";
 import { cachedPngConversion, convertImageToPngShared, imagePayloadKey } from "./image-loading";
 import { FenceFigure } from "./fence-figure";
@@ -162,6 +167,29 @@ class SafeToolRendererComponent implements Component {
 		}
 	}
 
+	describe(cx: DescribeContext): NativeNode {
+		try {
+			return (
+				this.#component.describe?.(cx) ??
+				node("rows", { cols: cx.cols, lines: [...this.#component.render(cx.cols)] })
+			);
+		} catch (err) {
+			logger.warn("Tool component describe failed", { tool: this.#toolName, error: String(err) });
+			const fallback = this.#fallback();
+			return (
+				fallback?.describe?.(cx) ?? node("rows", { cols: cx.cols, lines: [...(fallback?.render(cx.cols) ?? [])] })
+			);
+		}
+	}
+
+	/** Keep a stable native component boundary while refreshing its current fallback. */
+	setFallback(fallback: () => Component | undefined): void {
+		this.#fallback = fallback;
+	}
+
+	handleNativeEvent(event: NativeUiEvent): void {
+		this.#component.handleNativeEvent?.(event);
+	}
 	handleInput(data: string): void {
 		const handleInput = this.#component.handleInput;
 		if (handleInput === undefined) return;
@@ -217,6 +245,8 @@ export interface ToolExecutionOptions {
 	showImages?: boolean; // default: true (only used if terminal supports images)
 	/** Allow the name-keyed renderer registry only when the active tool is the built-in implementation. */
 	useBuiltInRenderer?: boolean;
+	/** Active extension's exact-name lookup. Factories are instantiated once per card. */
+	getToolRenderer?: (name: string) => ToolRendererFactory | undefined;
 }
 
 /** A tool result or progress frame as a card shows it. */
@@ -414,6 +444,9 @@ export class ToolExecutionComponent extends Container {
 	#textOutputKey: string | undefined;
 	#tool?: AgentTool;
 	#renderer?: ToolRenderer;
+	#overrideRenderer?: ToolRenderer;
+	readonly #rendererOverrides = new Map<string, ToolRenderer | undefined>();
+	#getToolRenderer: ToolExecutionOptions["getToolRenderer"];
 	#ui: ToolExecutionUi;
 	#result?: {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
@@ -499,6 +532,7 @@ export class ToolExecutionComponent extends Container {
 		this.#showImages = options.showImages ?? true;
 		this.#tool = tool;
 		this.#ui = ui;
+		this.#getToolRenderer = options.getToolRenderer;
 		this.#args = args;
 		this.#editMode = resolveEditModeForTool(toolName, tool);
 		if (this.#editMode) this.#previewReady = Promise.withResolvers<void>();
@@ -510,10 +544,11 @@ export class ToolExecutionComponent extends Container {
 		// lines and keep their tight spacing — only tinted lines survive.
 		this.#contentBox = new Box(0, 1);
 		this.#contentText = new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 1, 1);
+		this.#overrideRenderer = this.#getRendererOverride(toolName, this.#toolLabel, tool, this.#renderer);
 
 		// Use Box for custom tools or built-in tools with rich renderers.
 		const hasCustomRenderer = !!(tool?.renderCall || tool?.renderResult);
-		this.#usesContentBox = hasCustomRenderer || this.#renderer !== undefined;
+		this.#usesContentBox = hasCustomRenderer || this.#overrideRenderer !== undefined || this.#renderer !== undefined;
 		if (this.#usesContentBox) {
 			this.addChild(this.#contentBox);
 		} else {
@@ -525,6 +560,152 @@ export class ToolExecutionComponent extends Container {
 
 		this.#updateSpinnerAnimation();
 		this.#updateDisplay();
+	}
+
+	/** Rendering-only facade: never changes an execution tool or dispatch registry. */
+	#getRendererOverride(
+		name: string,
+		label: string,
+		original?: XdevMountedRenderer,
+		builtIn?: ToolRenderer,
+	): ToolRenderer | undefined {
+		if (!this.#getToolRenderer) return undefined;
+		if (this.#rendererOverrides.has(name)) return this.#rendererOverrides.get(name);
+		// Cache misses too; streamed updates must not recreate selection state.
+		this.#rendererOverrides.set(name, undefined);
+		try {
+			const factory = this.#getToolRenderer(name);
+			if (!factory) return undefined;
+			const renderSource = original?.renderCall || original?.renderResult ? original : builtIn;
+			const describeSource = original?.describeCall || original?.describeResult ? original : builtIn;
+			const fallback: ToolRenderer = {
+				mergeCallAndResult: renderSource?.mergeCallAndResult ?? describeSource?.mergeCallAndResult,
+				renderCall: (args, options, uiTheme) => {
+					if (renderSource?.renderCall)
+						return renderSource.renderCall(args, options, uiTheme) as Component | undefined;
+					return renderDefaultToolExecution({ label, args, options }, uiTheme);
+				},
+				renderResult: (result, options, uiTheme, args) => {
+					if (renderSource?.renderResult)
+						return renderSource.renderResult(result, options, uiTheme, args) as Component | undefined;
+					const output = result.content
+						.filter(block => block.type === "text")
+						.map(block => block.text ?? "")
+						.join("\n");
+					return renderDefaultToolExecution(
+						{ label, args, result: { output, isError: result.isError }, options },
+						uiTheme,
+					);
+				},
+				describeCall: (args, options) => {
+					if (describeSource?.describeCall) return describeSource.describeCall(args, options);
+					return describeDefaultToolExecution({ label, args, options });
+				},
+				describeResult: (result, options, args) => {
+					if (describeSource?.describeResult) return describeSource.describeResult(result, options, args);
+					const output = result.content
+						.filter(block => block.type === "text")
+						.map(block => block.text ?? "")
+						.join("\n");
+					return describeDefaultToolExecution({
+						label,
+						args,
+						result: { output, isError: result.isError },
+						options,
+					});
+				},
+			};
+			const renderer = factory({
+				fallback,
+				requestRender: () => {
+					this.#displayInputVersion++;
+					this.invalidate();
+					this.#ui.requestComponentRender(this);
+				},
+			});
+			if (
+				!renderer ||
+				(typeof renderer.renderCall !== "function" &&
+					typeof renderer.renderResult !== "function" &&
+					typeof renderer.describeCall !== "function" &&
+					typeof renderer.describeResult !== "function")
+			)
+				return undefined;
+			const attempt = <T>(stage: ToolRendererStage, render: () => T): T | undefined => {
+				try {
+					return render();
+				} catch (err) {
+					logger.warn("Extension tool renderer failed", { tool: name, stage, error: String(err) });
+					return undefined;
+				}
+			};
+			const components = new WeakMap<Component, SafeToolRendererComponent>();
+			const safeComponent = (
+				stage: ToolRendererStage,
+				value: unknown,
+				renderFallback: () => Component | undefined,
+			): Component | undefined => {
+				if (!value || typeof value !== "object" || !("render" in value) || typeof value.render !== "function") {
+					return renderFallback();
+				}
+				const component = value as Component;
+				let safe = components.get(component);
+				if (safe) safe.setFallback(renderFallback);
+				else {
+					safe = new SafeToolRendererComponent(name, stage, component, renderFallback);
+					components.set(component, safe);
+				}
+				return safe;
+			};
+			const safeView = (
+				stage: ToolRendererStage,
+				view: NativeToolView | undefined,
+				renderFallback: () => NativeToolView | undefined,
+			): NativeToolView | undefined => {
+				if (!view) return renderFallback();
+				const safeChild = (child: NativeChild): NativeChild => {
+					if ("render" in child)
+						return safeComponent(stage, child, () => ({
+							render: () => [],
+							describe: () => col(renderFallback()?.body ?? []),
+						}))!;
+					return child.c ? ({ ...child, c: child.c.map(safeChild) } as NativeNode) : child;
+				};
+				return { ...view, body: view.body?.map(safeChild) };
+			};
+			const facade: ToolRenderer = {
+				mergeCallAndResult: renderer.mergeCallAndResult,
+				renderCall: (args, options, uiTheme) =>
+					safeComponent(
+						"call",
+						attempt("call", () => renderer.renderCall?.(args, options, uiTheme)),
+						() => fallback.renderCall(args, options, uiTheme),
+					),
+				renderResult: (result, options, uiTheme, args) =>
+					safeComponent(
+						"result",
+						attempt("result", () => renderer.renderResult?.(result, options, uiTheme, args)),
+						() => fallback.renderResult(result, options, uiTheme, args),
+					),
+				describeCall: (args, options) =>
+					safeView(
+						"call",
+						attempt("call", () => renderer.describeCall?.(args, options)),
+						() => fallback.describeCall?.(args, options),
+					),
+				describeResult: (result, options, args) =>
+					safeView(
+						"result",
+						attempt("result", () => renderer.describeResult?.(result, options, args)),
+						() => fallback.describeResult?.(result, options, args),
+					),
+			};
+			this.#rendererOverrides.set(name, facade);
+			return facade;
+		} catch (err) {
+			logger.warn("Tool renderer factory failed", { tool: name, error: String(err) });
+			return undefined;
+		}
 	}
 
 	updateArgs(args: unknown, _toolCallId?: string): void {
@@ -1187,7 +1368,8 @@ export class ToolExecutionComponent extends Container {
 		// the ANSI path's preference for the tool's renderCall/renderResult.
 		const toolDescriber = this.#tool as ToolDescriber | undefined;
 		const renderer: ToolDescriber | undefined =
-			toolDescriber?.describeCall || toolDescriber?.describeResult ? toolDescriber : this.#renderer;
+			this.#overrideRenderer ??
+			(toolDescriber?.describeCall || toolDescriber?.describeResult ? toolDescriber : this.#renderer);
 		if (this.#isBenignSkip() || !renderer || (!renderer.describeCall && !renderer.describeResult)) {
 			return this.#defaultNativeView(options);
 		}
@@ -1452,8 +1634,8 @@ export class ToolExecutionComponent extends Container {
 		// failure (#7199).
 		if (benignSkip) {
 			this.#renderBenignSkipCard(stateBgFn);
-		} else if (this.#tool && (this.#tool.renderCall || this.#tool.renderResult)) {
-			const tool = this.#tool;
+		} else if (this.#overrideRenderer || (this.#tool && (this.#tool.renderCall || this.#tool.renderResult))) {
+			const tool = this.#overrideRenderer ?? this.#tool!;
 			const mergeCallAndResult = Boolean((tool as { mergeCallAndResult?: boolean }).mergeCallAndResult);
 			// Custom tools use Box for flexible component rendering
 			this.#contentBox.setBgFn(undefined);
@@ -1870,7 +2052,12 @@ export class ToolExecutionComponent extends Container {
 			const writeTool = this.#tool as { session?: { xdev?: XdevMountedState } } | undefined;
 			const resolveXdevMounted = writeTool?.session?.xdev?.resolve;
 			if (resolveXdevMounted) {
-				context.resolveXdevMounted = resolveXdevMounted;
+				context.resolveXdevMounted = (name: string) => {
+					const mounted = resolveXdevMounted(name);
+					if (!mounted) return undefined;
+					const renderer = this.#getRendererOverride(name, mounted.label ?? name, mounted, toolRenderers[name]);
+					return renderer ? { label: mounted.label, ...renderer } : mounted;
+				};
 			}
 		}
 

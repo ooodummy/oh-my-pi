@@ -15,7 +15,12 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { convertToLlm, wrapSteeringForModel } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { ExtensionRuntime, loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
+import {
+	bindPreparedExtensions,
+	ExtensionRuntime,
+	loadExtensionFromFactory,
+	loadExtensions,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import {
 	EXTENSION_HANDLER_TIMEOUT_MS,
 	ExtensionRunner,
@@ -30,6 +35,8 @@ import type {
 	InputEvent,
 	InputEventResult,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import type { ExtensionAPI, ToolDefinition, ToolRendererFactory } from "@oh-my-pi/pi-coding-agent";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -533,6 +540,154 @@ describe("ExtensionRunner", () => {
 			);
 
 			expect(runner.getAssistantThinkingRenderers().length).toBe(1);
+		});
+	});
+
+	describe("tool renderers", () => {
+		it("registers exact presentation names without registering or changing tools", async () => {
+			const factory: ToolRendererFactory = () => ({
+				renderCall: () => undefined,
+				renderResult: () => undefined,
+			});
+			const tool: ToolDefinition = {
+				name: "lookup",
+				label: "Lookup",
+				description: "Look up a value",
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [{ type: "text", text: "original result" }] }),
+			};
+			const extension = await loadExtensionFromFactory(
+				api => {
+					api.registerTool(tool);
+					const { registerToolRenderer } = api;
+					registerToolRenderer("lookup", factory);
+					registerToolRenderer("mcp_lookup", factory);
+				},
+				tempDir.path(),
+				new EventBus(),
+				new ExtensionRuntime(),
+			);
+			const runner = new ExtensionRunner(
+				[extension],
+				new ExtensionRuntime(),
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+
+			expect(runner.getToolRenderer("lookup")).toBe(factory);
+			expect(runner.getToolRenderer("mcp_lookup")).toBe(factory);
+			expect(runner.getToolRenderer("mcp_lookup_more")).toBeUndefined();
+			expect(runner.getToolRenderer("LOOKUP")).toBeUndefined();
+			expect(runner.getToolRenderer("missing")).toBeUndefined();
+			expect(runner.getAllRegisteredTools()).toHaveLength(1);
+			expect(extension.tools.get("lookup")?.definition).toBe(tool);
+			expect(extension.tools.has("mcp_lookup")).toBe(false);
+		});
+
+		it("rejects empty or untrimmed names rather than normalizing exact keys", async () => {
+			const factory: ToolRendererFactory = () => ({
+				renderCall: () => undefined,
+				renderResult: () => undefined,
+			});
+			for (const name of ["", " ", " lookup", "lookup ", "\nlookup"]) {
+				await expect(
+					loadExtensionFromFactory(
+						api => api.registerToolRenderer(name, factory),
+						tempDir.path(),
+						new EventBus(),
+						new ExtensionRuntime(),
+					),
+				).rejects.toThrow("Tool renderer name must be a non-empty trimmed string");
+			}
+		});
+
+		it("uses the first active extension and restores precedence when resumed", async () => {
+			const first: ToolRendererFactory = () => ({
+				renderCall: () => undefined,
+				renderResult: () => undefined,
+			});
+			const second: ToolRendererFactory = () => ({
+				renderCall: () => undefined,
+				renderResult: () => undefined,
+			});
+			const result = await bindPreparedExtensions(
+				[
+					{
+						path: "first",
+						resolvedPath: "first",
+						error: null,
+						factory: api => {
+							api.registerToolRenderer("lookup", second);
+							api.registerToolRenderer("lookup", first);
+						},
+					},
+					{
+						path: "second",
+						resolvedPath: "second",
+						error: null,
+						factory: api => api.registerToolRenderer("lookup", second),
+					},
+				],
+				tempDir.path(),
+			);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+
+			expect(runner.getToolRenderer("lookup")).toBe(first);
+			runner.setSuspendedExtensions(extension => extension.path === "first");
+			expect(runner.getToolRenderer("lookup")).toBe(second);
+			runner.setSuspendedExtensions(() => true);
+			expect(runner.getToolRenderer("lookup")).toBeUndefined();
+			runner.setSuspendedExtensions(() => false);
+			expect(runner.getToolRenderer("lookup")).toBe(first);
+		});
+
+		it("keeps factories and suspension isolated across prepared session bindings", async () => {
+			const prepared = [
+				{
+					path: "renderer",
+					resolvedPath: "renderer",
+					error: null,
+					factory: (api: ExtensionAPI) => {
+						api.registerToolRenderer("lookup", () => ({
+							renderCall: () => undefined,
+							renderResult: () => undefined,
+						}));
+					},
+				},
+			];
+			const parent = await bindPreparedExtensions(prepared, tempDir.path());
+			const child = await bindPreparedExtensions(prepared, tempDir.path());
+			const parentRunner = new ExtensionRunner(
+				parent.extensions,
+				parent.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const childRunner = new ExtensionRunner(
+				child.extensions,
+				child.runtime,
+				tempDir.path(),
+				SessionManager.inMemory(),
+				modelRegistry,
+			);
+			const parentFactory = parentRunner.getToolRenderer("lookup");
+			const childFactory = childRunner.getToolRenderer("lookup");
+
+			expect(parentFactory).toBeDefined();
+			expect(childFactory).toBeDefined();
+			expect(childFactory).not.toBe(parentFactory);
+			expect(child.extensions[0]!.toolRenderers).not.toBe(parent.extensions[0]!.toolRenderers);
+			childRunner.setSuspendedExtensions(() => true);
+			expect(childRunner.getToolRenderer("lookup")).toBeUndefined();
+			expect(parentRunner.getToolRenderer("lookup")).toBe(parentFactory);
 		});
 	});
 
@@ -4577,6 +4732,7 @@ describe("ExtensionRunner", () => {
 				fileWriteFallbackHandlers: [],
 				fileDeleteFallbackHandlers: [],
 				messageRenderers: new Map(),
+				toolRenderers: new Map(),
 				composerShapes: new Map(),
 				commands: new Map(),
 				flags: new Map(),

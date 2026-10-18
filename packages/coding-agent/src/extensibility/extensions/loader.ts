@@ -54,6 +54,7 @@ import type {
 	SourceInfo,
 	ToolDefinition,
 	ToolInfo,
+	ToolRendererFactory,
 } from "./types";
 
 installLegacyPiSpecifierShim();
@@ -270,6 +271,13 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		this.extension.messageRenderers.set(customType, renderer as MessageRenderer);
 	}
 
+	registerToolRenderer(toolName: string, factory: ToolRendererFactory): void {
+		if (toolName.length === 0 || toolName !== toolName.trim()) {
+			throw new TypeError("Tool renderer name must be a non-empty trimmed string");
+		}
+		this.extension.toolRenderers.set(toolName, factory);
+	}
+
 	registerAssistantThinkingRenderer(renderer: AssistantThinkingRenderer): void {
 		this.extension.assistantThinkingRenderers.push(renderer);
 	}
@@ -382,6 +390,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		fileWriteFallbackHandlers: [],
 		fileDeleteFallbackHandlers: [],
 		messageRenderers: new Map(),
+		toolRenderers: new Map(),
 		composerShapes: new Map(),
 		commands: new Map(),
 		flags: new Map(),

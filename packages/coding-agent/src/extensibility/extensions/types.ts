@@ -75,6 +75,8 @@ import type { CodeReviewAnnotation, TextReviewAnnotation } from "@oh-my-pi/pi-tu
 export type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { EditToolDetails } from "@oh-my-pi/pi-tui/tools/edit";
+import type { ToolRendererFactory } from "@oh-my-pi/pi-tui/tools";
+export type { ToolRendererFactory } from "@oh-my-pi/pi-tui/tools";
 import type { PythonResult } from "../../eval/py/executor";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
@@ -1802,6 +1804,12 @@ export interface ExtensionAPI {
 	/** Register a custom renderer for CustomMessageEntry. */
 	registerMessageRenderer<T = unknown>(customType: string, renderer: MessageRenderer<T>): void;
 
+	/**
+	 * Register presentation for an exact tool name without registering or changing the tool.
+	 * The factory creates a fresh renderer for each transcript card; keep per-call state there.
+	 */
+	registerToolRenderer(toolName: string, factory: ToolRendererFactory): void;
+
 	/** Register a renderer for assistant thinking blocks. Rendered after the original thinking text. */
 	registerAssistantThinkingRenderer(renderer: AssistantThinkingRenderer): void;
 
@@ -2186,6 +2194,7 @@ export interface Extension {
 	fileWriteFallbackHandlers: FileWriteFallbackHandler[];
 	fileDeleteFallbackHandlers: FileDeleteFallbackHandler[];
 	messageRenderers: Map<string, MessageRenderer>;
+	toolRenderers: Map<string, ToolRendererFactory>;
 	composerShapes: Map<string, ComposerShapeDefinition>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

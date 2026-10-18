@@ -1533,7 +1533,7 @@ export class EventController {
 				if (content.type !== "toolCall") continue;
 				const tool = this.ctx.viewSession.getToolByName(content.name);
 				const renderToolName = toolRenderName(content.name, tool);
-				if (renderToolName === "read") {
+				if (renderToolName === "read" && !this.ctx.viewSession.extensionRunner?.getToolRenderer(renderToolName)) {
 					if (!readArgsHaveTarget(content.arguments)) {
 						// Args still streaming — defer until path is parseable so we can route to the
 						// read group (files + xd:// devices) vs ToolExecutionComponent (other internal URLs).
@@ -1594,6 +1594,9 @@ export class EventController {
 						renderArgs,
 						{
 							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
+							getToolRenderer: this.ctx.viewSession.extensionRunner?.getToolRenderer.bind(
+								this.ctx.viewSession.extensionRunner,
+							),
 							showImages: cfgTerminalShowImages.get(settings),
 						},
 						tool,
@@ -1895,7 +1898,11 @@ export class EventController {
 					this.ctx.chatContainer.removeChild(stale);
 				}
 			}
-			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args)) {
+			if (
+				renderToolName === "read" &&
+				!this.ctx.viewSession.extensionRunner?.getToolRenderer(renderToolName) &&
+				readArgsCollapseIntoGroup(event.args)
+			) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				if (!this.#toolTimelineComponents.has(event.toolCallId)) {
 					const group = this.#getReadGroup();
@@ -1915,6 +1922,9 @@ export class EventController {
 				event.args,
 				{
 					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
+					getToolRenderer: this.ctx.viewSession.extensionRunner?.getToolRenderer.bind(
+						this.ctx.viewSession.extensionRunner,
+					),
 					showImages: cfgTerminalShowImages.get(settings),
 				},
 				tool,

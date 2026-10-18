@@ -110,6 +110,7 @@ function planReviewExtension(
 		fileWriteFallbackHandlers: [],
 		fileDeleteFallbackHandlers: [],
 		messageRenderers: new Map(),
+		toolRenderers: new Map(),
 		composerShapes: new Map(),
 		commands: new Map(),
 		flags: new Map(),

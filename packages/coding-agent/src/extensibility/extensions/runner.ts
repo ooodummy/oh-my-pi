@@ -99,6 +99,7 @@ import type {
 	ToolRegistrationListener,
 	ToolResultEvent,
 	ToolResultEventResult,
+	ToolRendererFactory,
 	UserBashEvent,
 	UserBashEventResult,
 	UserPythonEvent,
@@ -1335,6 +1336,16 @@ export class ExtensionRunner {
 			const renderer = ext.messageRenderers.get(customType);
 			if (renderer) {
 				return renderer;
+			}
+		}
+		return undefined;
+	}
+
+	getToolRenderer(toolName: string): ToolRendererFactory | undefined {
+		for (const ext of this.extensions) {
+			const factory = ext.toolRenderers.get(toolName);
+			if (factory) {
+				return factory;
 			}
 		}
 		return undefined;

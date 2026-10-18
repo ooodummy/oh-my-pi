@@ -142,6 +142,13 @@ export interface NativeToolView {
 	readonly tools?: TspToolProps["tools"];
 }
 
+/** A presentation instance belongs to one transcript tool card, never to a tool registry. */
+export type ToolRendererFactory = (context: {
+	requestRender: () => void;
+	/** Already-selected original presentation; contains no execution methods. */
+	fallback: ToolRenderer;
+}) => ToolRenderer;
+
 /**
  * A tool's transcript presentation: call preview, result view, and repaint/animation hints.
  * Method signatures are intentionally bivariant so a renderer typed over its own

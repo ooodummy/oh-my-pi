@@ -655,7 +655,11 @@ export class UiHelpers {
 					const renderToolName = toolRenderName(content.name, tool);
 					resolveWaitingPoll(renderToolName);
 
-					if (renderToolName === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+					if (
+						renderToolName === "read" &&
+						!this.ctx.viewSession.extensionRunner?.getToolRenderer(renderToolName) &&
+						readArgsCollapseIntoGroup(content.arguments)
+					) {
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
 								readGroup = new ReadToolGroupComponent({
@@ -718,6 +722,9 @@ export class UiHelpers {
 						renderArgs,
 						{
 							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
+							getToolRenderer: this.ctx.viewSession.extensionRunner?.getToolRenderer.bind(
+								this.ctx.viewSession.extensionRunner,
+							),
 							showImages: cfgTerminalShowImages.get(settings),
 						},
 						tool,

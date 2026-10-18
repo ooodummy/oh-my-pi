@@ -117,7 +117,7 @@ Core methods:
 
 - `on(event, handler)`
 - `registerTool`, `registerCommand`, `registerShortcut`, `registerFlag`
-- `registerMessageRenderer`, `registerAssistantThinkingRenderer`
+- `registerToolRenderer`, `registerMessageRenderer`, `registerAssistantThinkingRenderer`
 - `registerComposerShape`
 - `setLabel`, `getFlag`
 - `sendMessage`, `sendUserMessage`, `appendEntry`, `exec`
@@ -1163,6 +1163,27 @@ for (const entry of ctx.sessionManager.getBranch()) {
 ```
 
 ## Rendering extension points
+
+## Existing tool renderers
+
+`registerToolRenderer(exactToolName, factory)` changes presentation of an existing
+tool without registering a replacement. It does not alter the tool's schema,
+execution, approvals, or model-facing results. Native MCP tools and canonical
+tools reached through `xd://` use the same registration.
+
+The factory receives `{ requestRender, fallback }` and returns a `ToolRenderer`.
+Types are exported from `@oh-my-pi/pi-tui/tools`. OMP creates one renderer instance
+per original transcript card, so selection or preview state stays with that call.
+Spread the bound `fallback` and override only the rendering methods you need;
+delegate unsupported metadata, expanded results, and other unhandled states to
+that fallback. Native child components retain their event handlers. Exceptions
+in factories, rendering hooks, or child rendering fall back to native output.
+
+Registrations belong to the extension lifecycle. The first active extension
+registered for an exact name wins; suspended extensions do not supply renderers.
+The active session's runner supplies both live and restored cards. Use
+`requestRender()` when a card-local interaction changes its presentation.
+
 
 ## Composer shape renderer
 
