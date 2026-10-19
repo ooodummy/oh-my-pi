@@ -233,6 +233,10 @@ export class Reconciler {
 	#regions: Record<RegionId, readonly Entry[]> | null = null;
 	#rows = 0;
 	#gone = new Set<string>();
+	/** Sheets outlive descriptions, memoized nodes and settled components, until this surface is discarded. */
+	#styles = new Map<string, string>();
+	#styleBytes = 0;
+	#invalidStyles = new WeakSet<object>();
 	/** Live-only regions to re-add after the surface was closed and adopted. */
 	#readd: readonly RegionId[] = [];
 	#regionOwners: Record<RegionId, Owner> = {
@@ -248,6 +252,37 @@ export class Reconciler {
 	/** `rows` fallback nodes in the last reconciled frame. */
 	get fallbackCount(): number {
 		return this.#rows;
+	}
+
+	/** Surface-lifetime declarations, in their original cascade order. */
+	get styles(): ReadonlyMap<string, string> {
+		return this.#styles;
+	}
+
+	#collectStyles(node: NativeNode): void {
+		for (const sheet of node.styles ?? []) {
+			if (this.#styles.get(sheet.name) === sheet.css) continue;
+			const valid =
+				typeof sheet.name === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(sheet.name) && typeof sheet.css === "string";
+			const bytes = valid ? Buffer.byteLength(sheet.css, "utf8") : 0;
+			const previous = this.#styles.get(sheet.name);
+			const total = this.#styleBytes - (previous === undefined ? 0 : Buffer.byteLength(previous, "utf8")) + bytes;
+			if (!valid || total > 256 * 1024) {
+				if (!this.#invalidStyles.has(sheet)) {
+					this.#invalidStyles.add(sheet);
+					logger.warn("TSP: invalid surface stylesheet", {
+						sf: this.surface,
+						sheet: sheet.name,
+						msg: valid
+							? "surface CSS exceeds 256 KiB"
+							: "expected a 1–64 character stylesheet name and string CSS",
+					});
+				}
+				continue;
+			}
+			this.#styles.set(sheet.name, sheet.css);
+			this.#styleBytes = total;
+		}
 	}
 
 	/** Diff the regions against the previous frame; the first call adds everything. */
@@ -618,6 +653,7 @@ export class Reconciler {
 			this.#revisitNode(next, inner);
 			return;
 		}
+		this.#collectStyles(next.node);
 		const reveal = next.node.reveal;
 		if (typeof reveal === "object") {
 			const was = old.node.reveal;
@@ -777,6 +813,7 @@ export class Reconciler {
 
 	/** A full wire subtree for an entry; nested components get states (or pending moves when mounted elsewhere). */
 	#materialize(entry: NodeEntry, walk: Walk): TspNode {
+		this.#collectStyles(entry.node);
 		if (typeof entry.node.reveal === "string") this.#reveals.push([entry.id, entry.node.reveal]);
 		const entries = this.#entries(entry.node.c, entry.keypath, entry.owner, entry.hoist, walk);
 		const children: TspNode[] = [];
@@ -1009,6 +1046,7 @@ export class Reconciler {
 	/** A settled component changed: targeted ops by id, no diff against dropped state. */
 	#replaceSettled(state: CompState, next: NativeNode, parent: string, before: string | null, settled: boolean): void {
 		state.settleSent = false;
+		this.#collectStyles(next);
 		const inner: Inner[] = [];
 		const walk: Walk = { owner: state.owner, inner, settled, hoist: true };
 		if (next.k !== state.kind) {

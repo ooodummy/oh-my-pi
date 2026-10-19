@@ -69,6 +69,42 @@ describe("TSP framing", () => {
 		});
 	});
 
+	it("decodes el control changes without a picker item and preserves form values and sheet diagnostics", () => {
+		const events: readonly TspEvent[] = [
+			{
+				ev: "change",
+				sf: "s:1",
+				id: "a.enabled",
+				name: "enabled",
+				checked: true,
+				value: "on",
+				values: { enabled: true },
+			},
+			{ ev: "change", sf: "s:1", id: "a.settings", item: "size", value: 4 },
+			{ ev: "action", sf: "s:1", id: "a.apply", act: "apply", values: { tags: ["a"], size: null } },
+			{ ev: "error", sf: "s:1", sheet: "main", msg: "1:1: unsupported property" },
+			{ ev: "error", sf: "s:1", id: "a.unknown", msg: "unknown el tag svg" },
+		];
+		for (const event of events) {
+			expect(parseTspMessage(encodeTspMessage("e", JSON.stringify(event)))).toEqual({ verb: "e", event });
+		}
+		for (const event of [
+			{ ev: "change", id: "a" },
+			{ ev: "change", id: "a", checked: "true", value: "on" },
+			{ ev: "change", id: "a", checked: true, value: false },
+		]) {
+			expect(parseTspMessage(encodeTspMessage("e", JSON.stringify(event)))).toBeNull();
+		}
+	});
+
+	it("chunks stylesheet transport without changing CSS bytes", () => {
+		const body = JSON.stringify({ sf: "s:1", name: "main", css: ".label::before { content: '€漢字'; }".repeat(12) });
+		const chunks = messages(encodeTspMessage("s", body, undefined, 19)).map(message => splitTspMessage(message)!);
+		expect(chunks.length).toBeGreaterThan(1);
+		expect(chunks.every(chunk => chunk.verb === "s")).toBe(true);
+		expect(chunks.map(chunk => chunk.body).join("")).toBe(body);
+	});
+
 	it("chunks a body over the APC limit and reassembles it byte-exact, never splitting a code point", () => {
 		const body = JSON.stringify({ text: 'ab€漢字🙂🙃 é\u001b"quote" '.repeat(9) });
 		const limit = 23;

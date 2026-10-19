@@ -897,6 +897,79 @@ up to 10 content lines plus a truncation notice). Pass `undefined` to remove a
 widget. `setEditorText` and `pasteToEditor` request a repaint after mutating the
 editor.
 
+#### Passive custom popups
+
+Pass `{ overlay: true, overlayOptions: { nonModal: true, anchor: "top-center", width: 44 } }`
+to `ctx.ui.custom(factory, options)` to keep the composer active under a popup.
+Native pointer actions still reach the component. They do not take keyboard focus.
+Closing or aborting the popup does not restore old editor text or move focus from another active component.
+`fullscreen: true` ignores `nonModal`.
+
+The promise still waits for the factory's `done(result)` callback.
+Start the call without awaiting it when an event handler must return while the popup stays open.
+Handle rejection and use `options.signal` to abort the popup during session cleanup.
+Tern supports coarse overlay placement and size. The example maps to `top` and `sm`, not an absolute pixel position.
+
+#### Native elements and scoped styles
+
+Custom components can implement `describe(cx)` and `handleNativeEvent(event)`
+alongside their ordinary `render(width)` fallback. On Tern, use
+`cx.supports("el") && cx.stylesheets === true` before returning styled elements.
+The marker requires host transport support and the terminal's real `styles` capability.
+Older hosts can advertise terminal features without transporting stylesheets.
+
+```typescript
+import { el, type DescribeContext, type NativeNode, type NativeStylesheet } from "@oh-my-pi/pi-tui";
+
+const styles: readonly NativeStylesheet[] = [{
+  name: "my-extension-panel",
+  css: ".my-panel { display: flex; gap: 8px } .my-panel button:hover { color: var(--sf-c-accent) }",
+}];
+
+// Inside a component that also implements render(width):
+describe(cx: DescribeContext): NativeNode | null {
+  if (!cx.supports("el") || cx.stylesheets !== true) return null;
+  return {
+    ...el("div", { class: "my-panel" }, [
+      el("button", { text: "Inspect", actions: { click: "inspect" }, title: "Inspect this result" }, undefined, "inspect"),
+    ]),
+    styles,
+  };
+}
+```
+
+`handleNativeEvent` receives `{ type: "action", key: "inspect", act: "inspect", ... }`
+for that button, on inline and fullscreen surfaces alike. Keys keep interaction
+targets stable across updates. Controls (`el("input", { type: "checkbox" | "radio", ... })`)
+report `type: "change"` with `checked`, `value`, optional `name`, and an empty
+`item` (prefs/picker changes retain their item id). Events from an `el` form
+also carry `values`, including on action/select/activate events.
+
+`NativeNode.styles` accepts `readonly NativeStylesheet[]`, each `{ name, css }`.
+The host installs changed declarations before their dependent frame, once per
+surface/version. Same-name/same-CSS sheets are deduplicated; changed CSS replaces
+the sheet in its original cascade position. Memoized/settled nodes do not lose
+their declarations. Sheets live with the surface and its closed scrollback,
+not with the declaring component: removing a node or omitting `styles` does not
+unregister a sheet. Reopening/adopting a surface replays its retained sheets.
+Use a bounded static sheet and namespaced classes/names, not a new sheet per
+result or node. Names allow 1–64 ASCII letters, digits, `_` and `-`; all sheets
+on one surface may total at most 256 KiB of UTF-8 CSS. The host logs invalid
+declarations; renderer CSS/tag diagnostics use the existing TSP error log.
+
+These are native renderer elements, not a browser: only the documented safe
+tags and attribute allowlist apply, text is plain, and scripts, arbitrary
+attributes, inline style, external URLs in CSS and fixed positioning are not
+available. CSS is surface-scoped and uses Tern's supported subset. Prefer
+renderer-owned hover/transitions/animation and a
+`@media (prefers-reduced-motion: reduce)` rule for optional motion; there is no
+documented free-dragging API. See the SDK's
+[elements](https://docs.stencil.so/tern/elements/el.md),
+[stylesheets](https://docs.stencil.so/tern/protocol/theme.md#stylesheets) and
+[CSS constraints](https://docs.stencil.so/tern/styles/css.md).
+
+
+
 #### Launching terminal commands
 
 `ctx.ui.openTerminal(request)` is available only in the interactive TUI. It creates a
@@ -1043,6 +1116,57 @@ There is no shared environment override: each multiplexer applies its own
 environment propagation rules; the dispatcher does not synthesize uniform variable
 inheritance. Request argv stays separate for direct backends; only shell-input
 backends turn argv into shell text, under the required POSIX grammar assertion.
+
+#### Status text and native progress
+
+`ctx.ui.setStatus(key, text, options?)` keeps `text` as the text-terminal and RPC
+fallback. Pass `undefined` to remove the status. Existing two-argument calls are
+unchanged. Every update replaces the previous native metadata and activation;
+omitting the third argument restores a plain text status.
+
+```typescript
+ctx.ui.setStatus("index", "◔ Indexing 37%", {
+	label: "Indexing",
+	progress: 0.37,
+	progressMotion: "brief",
+	tone: "info",
+	title: "Embedding 370 of 1,000 chunks",
+	onActivate: () => openProjectOverview(),
+});
+ctx.ui.setStatus("index", "Index unavailable", {
+	label: "Index unavailable",
+	icon: "warning",
+	tone: "error",
+	title: "Open the project overview for details",
+	onActivate: () => openProjectOverview(),
+});
+```
+
+Native composers draw `progress` as a real small meter ring, preserving arbitrary
+normalized values such as `0.731`. `null` means genuinely unknown progress;
+omitting `progress` removes the meter. An optional named `icon` uses the same
+fixed leading slot when there is no progress; a ring takes precedence over the
+icon. Neither adds a second status line. Without an icon or progress, the native
+status remains plain text. Values outside 0–1 are clamped and nonfinite values
+become unknown. `label` defaults to the fallback text; supply it without Unicode
+progress glyphs for native rendering. `title` supplies hover details, otherwise
+the host derives them from the label and progress.
+
+Set `progressMotion: "brief"` to opt into a finite determinate transition.
+The ring fills over 120 ms and its mark settles to a muted tone after 420 ms.
+It does not run a continuous animation. The label and activation remain stable.
+Unknown progress uses the supplied static icon in this mode, not an indeterminate
+ring. Reduced motion skips transitions. Errors, removal, disposal, and leaving
+native rendering cancel them. Tooltips retain the reported value, not an
+intermediate animation value. The protocol does not provide an opacity fade.
+
+`tone` accepts the native semantic tones (`neutral`, `accent`, `info`, `success`,
+`warning`, `error`, `pending`, `muted`, `user`). Interactive native activation
+calls `onActivate` directly without submitting a model turn; asynchronous
+callbacks are supported and failures appear as error notifications. Text
+terminals and RPC continue to display only the fallback text, without activation.
+Status visibility follows the existing configured `status` segment and
+`showHookStatus` setting.
 
 ### RPC mode (`rpc-mode.ts`)
 

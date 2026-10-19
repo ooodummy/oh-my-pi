@@ -14,8 +14,16 @@
  * the Tern SDK's Surface Protocol reference (`docs/sdk/src/protocol` in the
  * Stencil repository, https://docs.stencil.so/tern/protocol/) for the spec.
  */
-import type { TspEvent, TspKind, TspProps, TspScrollBy, TspSpan } from "@oh-my-pi/pi-wire";
+import type { TspEvent, TspFormValues, TspKind, TspProps, TspScrollBy, TspSpan } from "@oh-my-pi/pi-wire";
 import type { Component } from "../tui";
+
+/** A named surface-scoped stylesheet, retained with the surface and its settled history. */
+export interface NativeStylesheet {
+	/** 1–64 ASCII letters, digits, underscores or hyphens; namespace extension-owned names. */
+	readonly name: string;
+	/** Tern's supported CSS subset, not browser CSS; all surface sheets total at most 256 KiB UTF-8. */
+	readonly css: string;
+}
 
 /** A described node: a wire node minus its id, with components allowed as children. */
 export type NativeNode = {
@@ -23,6 +31,13 @@ export type NativeNode = {
 		readonly k: K;
 		readonly p?: TspProps<K>;
 		readonly c?: readonly NativeChild[];
+		/**
+		 * Install these sheets for the surface's lifetime. Equal name/CSS pairs
+		 * are shared; changed CSS replaces the named sheet without reordering it.
+		 * Removing a node or omitting styles does not remove its sheets.
+		 * Gate styled elements on cx.supports("el") && cx.feature("styles").
+		 */
+		readonly styles?: readonly NativeStylesheet[];
 		/**
 		 * Identity among its siblings inside the owning component (defaults to
 		 * the child index). Give keys to children that can be inserted, removed
@@ -83,6 +98,8 @@ export interface DescribeContext {
 	 * the process's own default locale may not know.
 	 */
 	readonly hour12?: boolean;
+	/** Both the host and terminal support NativeNode.styles. Absent on older hosts. */
+	readonly stylesheets?: boolean;
 	/** Whether the terminal renders `kind` natively (else describe something simpler or let it fall back). */
 	supports(kind: TspKind): boolean;
 	/**
@@ -117,8 +134,8 @@ export interface NativeScreen extends NativeSurface {
  */
 export type NativeUiEvent =
 	| { readonly type: "toggle"; readonly key: string; readonly collapsed: boolean }
-	| { readonly type: "select"; readonly key: string; readonly item: string }
-	| { readonly type: "activate"; readonly key: string; readonly item: string }
+	| { readonly type: "select"; readonly key: string; readonly item: string; readonly values?: TspFormValues }
+	| { readonly type: "activate"; readonly key: string; readonly item: string; readonly values?: TspFormValues }
 	| {
 			readonly type: "action";
 			readonly key: string;
@@ -126,13 +143,18 @@ export type NativeUiEvent =
 			/** Scope/tab/strip id, sort column, or the prefs row an action control belongs to. */
 			readonly value?: string;
 			readonly mods: readonly string[];
+			readonly values?: TspFormValues;
 	  }
 	/** A typed value changed by pointer (prefs rows, picker toggles); `null` resets to the default. */
 	| {
 			readonly type: "change";
 			readonly key: string;
+			/** Empty for an el control; its identity is key and its form name is name. */
 			readonly item: string;
 			readonly value: boolean | number | string | readonly string[] | null;
+			readonly name?: string;
+			readonly checked?: boolean;
+			readonly values?: TspFormValues;
 	  }
 	/** An edit over the terminal's own selection in an `editor`/`input` node (see {@link NativeTextEdit}). */
 	| ({ readonly type: "edit"; readonly key: string } & NativeTextEdit)

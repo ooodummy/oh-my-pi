@@ -9,7 +9,7 @@
  *   ]);
  * }
  */
-import type { TspKind, TspProps, TspSpan, TspText } from "@oh-my-pi/pi-wire";
+import type { TspElTag, TspKind, TspProps, TspSpan, TspText } from "@oh-my-pi/pi-wire";
 import type { NativeChild, NativeNode } from "./node";
 
 /** A node of any kind. */
@@ -25,6 +25,16 @@ export function span(t: string, s?: string, extra?: Omit<TspSpan, "t" | "s">): T
 /** Plain or styled text. */
 export function text(content: TspText, p?: Omit<TspProps<"text">, "text" | "spans">): NativeNode {
 	return typeof content === "string" ? node("text", { ...p, text: content }) : node("text", { ...p, spans: content });
+}
+
+/** A safe renderer-owned element; declare scoped CSS with NativeNode.styles. */
+export function el(
+	tag: TspElTag,
+	p?: Omit<TspProps<"el">, "tag">,
+	c?: readonly NativeChild[],
+	key?: string,
+): NativeNode {
+	return node("el", { ...p, tag }, c, key);
 }
 
 /** Vertical stack. */
@@ -73,7 +83,7 @@ export function keyed(described: NativeNode, key: string): NativeNode {
 /** `described` mounted but not laid out when `hidden` (cheap visibility toggles keep ids and view state). */
 export function withHidden(described: NativeNode, hidden: boolean): NativeNode {
 	if (!hidden) return described;
-	return node(described.k, { ...described.p, hidden: true } as TspProps, described.c, described.key);
+	return { ...described, p: { ...described.p, hidden: true } } as NativeNode;
 }
 
 /** Stable node key for an arbitrary identity string; keys join into `/` keypaths, so identities are hashed. */

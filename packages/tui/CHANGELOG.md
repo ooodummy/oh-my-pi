@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `OverlayOptions.nonModal` for passive popups that keep composer focus and cursor visibility. Native popup actions remain active without taking keyboard focus. Fullscreen overlays remain modal.
+- Added `TUI.hasModalOverlay()` to distinguish blocking overlays from passive popups without changing `hasOverlay()`.
+- Added native Tern `el` elements, safe element builders, form/control events, and surface-scoped `NativeNode.styles` declarations with capability gating, deduplication, replacement and replay across surface adoption.
+- Added structured extension status presentation with clickable native labels and finite progress motion that respects reduced-motion preferences.
+
+
 ## [18.12.1] - 2026-10-17
 
 ### Breaking Changes

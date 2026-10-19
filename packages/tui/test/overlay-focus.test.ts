@@ -109,6 +109,92 @@ class CapturingRecorder extends FocusRecorder {
 }
 
 describe("TUI overlay focus", () => {
+	it("keeps composer focus, cursor and input through a passive overlay lifecycle", () => {
+		const terminal = new MinimalTerminal();
+		const tui = new TUI(terminal);
+		const editor = new FocusRecorder("editor");
+		const replacement = new FocusRecorder("replacement");
+		const popup = new FocusRecorder("popup");
+		tui.addChild(editor);
+		tui.setFocus(editor);
+		try {
+			tui.start();
+			const transitions = terminal.cursorTransitions;
+			const handle = tui.showOverlay(popup, { nonModal: true, anchor: "top-center", width: 44 });
+			expect(tui.hasOverlay()).toBe(true);
+			expect(tui.hasModalOverlay()).toBe(false);
+			expect(tui.getFocused()).toBe(editor);
+			expect(terminal.cursorTransitions).toBe(transitions);
+			terminal.sendInput("first");
+			expect(editor.inputs).toEqual(["first"]);
+			handle.setHidden(true);
+			tui.setFocus(replacement);
+			const replacementTransitions = terminal.cursorTransitions;
+			handle.setHidden(false);
+			terminal.sendInput("second");
+			expect(tui.getFocused()).toBe(replacement);
+			expect(replacement.inputs).toEqual(["second"]);
+			expect(popup.inputs).toEqual([]);
+			handle.hide();
+			expect(tui.hasOverlay()).toBe(false);
+			expect(tui.getFocused()).toBe(replacement);
+			expect(terminal.cursorTransitions).toBe(replacementTransitions);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("restores modal focus beneath passive popups and treats fullscreen as modal", () => {
+		const terminal = new MinimalTerminal();
+		const tui = new TUI(terminal);
+		const editor = new FocusRecorder("editor");
+		const modal = new FocusRecorder("modal");
+		const popup = new FocusRecorder("popup");
+		tui.addChild(editor);
+		tui.setFocus(editor);
+		try {
+			tui.start();
+			tui.showOverlay(modal);
+			tui.showOverlay(popup, { nonModal: true });
+			terminal.sendInput("modal key");
+			expect(modal.inputs).toEqual(["modal key"]);
+			expect(tui.getFocused()).toBe(modal);
+			tui.hideOverlay();
+			expect(tui.getFocused()).toBe(modal);
+			tui.hideOverlay();
+			expect(tui.getFocused()).toBe(editor);
+			tui.showOverlay(popup, { nonModal: true, fullscreen: true });
+			expect(tui.hasModalOverlay()).toBe(true);
+			expect(tui.getFocused()).toBe(popup);
+			terminal.sendInput("fullscreen key");
+			expect(popup.inputs).toEqual(["fullscreen key"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("does not redirect input to a passive popup when a modal becomes invisible", () => {
+		const terminal = new MinimalTerminal(),
+			tui = new TUI(terminal);
+		const editor = new FocusRecorder("editor"),
+			modal = new FocusRecorder("modal"),
+			popup = new FocusRecorder("popup");
+		let visible = true;
+		tui.addChild(editor);
+		tui.setFocus(editor);
+		try {
+			tui.start();
+			tui.showOverlay(modal, { visible: () => visible });
+			tui.showOverlay(popup, { nonModal: true });
+			visible = false;
+			terminal.sendInput("composer key");
+			expect(tui.getFocused()).toBe(editor);
+			expect(editor.inputs).toEqual(["composer key"]);
+			expect(popup.inputs).toEqual([]);
+		} finally {
+			tui.stop();
+		}
+	});
 	it("delivers keys to the displaced editor beneath a paint-only overlay", () => {
 		const terminal = new MinimalTerminal();
 		const tui = new TUI(terminal);

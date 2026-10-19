@@ -93,6 +93,15 @@ tui.requestComponentRender(component); // Re-render only the root subtree contai
 tui.onDebug = () => console.log("Debug triggered");
 ```
 
+`tui.showOverlay(component, { nonModal: true })` shows a passive popup.
+Opening, hiding, or showing the popup does not move keyboard focus or hide the composer cursor.
+Native pointer actions still reach the component without taking keyboard focus.
+`fullscreen: true` ignores `nonModal` and keeps the existing modal behavior.
+`tui.hasOverlay()` includes passive popups. `tui.hasModalOverlay()` excludes them.
+Tern maps overlay placement to `top`, `center`, or `bottom`, and size to `sm`, `md`, `lg`, or `full`.
+For example, `{ nonModal: true, anchor: "top-center", width: 44 }` uses a small native popup at the top.
+
+
 ### Component Interface
 
 All components implement:

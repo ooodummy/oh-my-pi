@@ -38,10 +38,11 @@ import {
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
 import { summarizeUsageResetCredits } from "../overlays/usage-display";
 import { getPreset } from "./presets";
+import { ExtensionStatuses, type ExtensionStatusOptions } from "./extension-status";
 import { describeSegment, renderSegment, type SegmentContext } from "./segments";
 import type { TspMeterMark, TspProps } from "@oh-my-pi/pi-wire";
-import type { NativeNode, NativeUiEvent } from "../native/node";
-import { col, node, span } from "../native/describe";
+import type { DescribeContext, NativeNode, NativeUiEvent } from "../native/node";
+import { col, node } from "../native/describe";
 import { getContextMeterThresholds } from "../chrome/context-thresholds";
 import { isNativeRendering } from "../native/state";
 import { getSeparator } from "./separators";
@@ -704,7 +705,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#pricingTimer: NodeJS.Timeout | undefined;
 	#pricingTimerCost: ModelCost | undefined;
 	#pricingTransition: number | undefined;
-	#hookStatuses: Map<string, string> = new Map();
+	#hookStatuses = new ExtensionStatuses(() => {
+		this.#invalidateStatusLineRenderCache();
+		this.#onBranchChange?.();
+	});
 	#sortedHookStatuses: readonly string[] = [];
 	#subagentCount: number = 0;
 	#runningSubagentIds = new Set<string>();
@@ -1216,16 +1220,9 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		this.#onResetExpiryNotice = handler;
 	}
 
-	setHookStatus(key: string, text: string | undefined): void {
-		if (text === undefined) {
-			if (!this.#hookStatuses.delete(key)) return;
-		} else {
-			if (this.#hookStatuses.get(key) === text) return;
-			this.#hookStatuses.set(key, text);
-		}
-		this.#sortedHookStatuses = Array.from(this.#hookStatuses.entries())
-			.sort(([a], [b]) => a.localeCompare(b))
-			.map(([, status]) => status);
+	setHookStatus(key: string, text: string | undefined, options?: ExtensionStatusOptions): void {
+		if (!this.#hookStatuses.set(key, text, options)) return;
+		this.#sortedHookStatuses = this.#hookStatuses.texts;
 		this.#invalidateStatusLineRenderCache();
 	}
 
@@ -1283,6 +1280,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		this.#stopSpeculationBlink();
 		this.#stopBrandFadeTimer();
 		this.#stopPricingTimer();
+		this.#hookStatuses.dispose();
 		this.#clearUsageStartTimer();
 		this.#onCodexResetFireworks = undefined;
 		this.#onResetExpiryNotice = undefined;
@@ -3518,7 +3516,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	 * configured segment as a `seg` in configured order with its drop priority.
 	 * Returns the same object while nothing changed.
 	 */
-	describeComposerFacts(): ComposerFacts {
+	describeComposerFacts(cx?: Pick<DescribeContext, "reduceMotion">): ComposerFacts {
+		if (cx) this.#hookStatuses.setReduceMotion(cx.reduceMotion);
 		const effectiveSettings = this.#resolveSettings();
 		const probe = this.#nativeInputsProbe;
 		this.#readStatusLineExternalInputs(probe);
@@ -3570,6 +3569,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 
 	handleNativeEvent(event: NativeUiEvent): void {
 		if (event.type !== "action") return;
+		if (this.#hookStatuses.activate(event.act)) return;
 		for (const key in NATIVE_SEGMENT_ACTIONS) {
 			const action = NATIVE_SEGMENT_ACTIONS[key];
 			if (action !== event.act) continue;
@@ -3602,6 +3602,18 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const collect = (side: "left" | "right", ids: readonly StatusLineSegmentId[]): void => {
 			ids.forEach((id, index) => {
 				if (COMPOSER_HOMED_SEGMENTS[id]) return;
+				if (id === "status") {
+					facts.push(
+						...this.#hookStatuses.describe(
+							{
+								role: "omp.composer.fact",
+								priority: statusSegmentPriority(side, index, ids.length),
+							},
+							dim,
+						),
+					);
+					return;
+				}
 				const view = describeSegment(id, ctx);
 				if (!view) return;
 				const props: TspProps<"seg"> = {
@@ -3619,12 +3631,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		collect("right", rightSegments);
 		// Hook statuses the `status` segment doesn't already carry trail the configured facts.
 		if ((this.#settings.showHookStatus ?? true) && !segments.includes("status")) {
-			this.#sortedHookStatuses.forEach((status, index) => {
-				const text = sanitizeStatusText(status);
-				if (!text) return;
-				const props: TspProps<"seg"> = { role: "omp.composer.fact", priority: 0 };
-				facts.push(describeSeg(`hook-${index}`, props, { spans: [span(text)] }, dim));
-			});
+			facts.push(...this.#hookStatuses.describe({ role: "omp.composer.fact", priority: 0 }, dim));
 		}
 
 		const pct = ctx.contextPercent;
@@ -3761,6 +3768,19 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const subagentBadge = this.#subagentCount > 0;
 		leftSegments.forEach((id, index) => {
 			if (subagentBadge && id === "subagents") return;
+			if (id === "status") {
+				segs.push(
+					...this.#hookStatuses.describe(
+						{
+							role: "omp.status.status",
+							side: "left",
+							priority: statusSegmentPriority("left", index, leftSegments.length),
+						},
+						dim,
+					),
+				);
+				return;
+			}
 			const view = describeSegment(id, ctx);
 			if (view) push(id, "left", statusSegmentPriority("left", index, leftSegments.length), view);
 		});
@@ -3781,6 +3801,19 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		}
 		rightSegments.forEach((id, index) => {
 			if (subagentBadge && id === "subagents") return;
+			if (id === "status") {
+				segs.push(
+					...this.#hookStatuses.describe(
+						{
+							role: "omp.status.status",
+							side: "right",
+							priority: statusSegmentPriority("right", index, rightSegments.length),
+						},
+						dim,
+					),
+				);
+				return;
+			}
 			const view = describeSegment(id, ctx);
 			if (view) push(id, "right", statusSegmentPriority("right", index, rightSegments.length), view);
 		});
@@ -3791,18 +3824,11 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			"bar",
 		);
 		const showHooks = this.#settings.showHookStatus ?? true;
-		if (!showHooks || this.#sortedHookStatuses.length === 0) return bar;
+		if (!showHooks || segments.includes("status") || this.#sortedHookStatuses.length === 0) return bar;
 		return col(
 			[
 				bar,
-				...this.#sortedHookStatuses.map((status, index) =>
-					node(
-						"text",
-						{ text: sanitizeStatusText(status), wrap: "none", role: "omp.status.hook" },
-						undefined,
-						`hook-${index}`,
-					),
-				),
+				node("status", { role: "omp.status.hooks" }, this.#hookStatuses.describe({ role: "omp.status.hook" }, dim)),
 			],
 			{ role: "omp.status.panel" },
 		);

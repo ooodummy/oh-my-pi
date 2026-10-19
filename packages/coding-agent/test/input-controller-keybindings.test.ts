@@ -175,7 +175,7 @@ async function createContext() {
 			addInputListener,
 			addStartListener,
 			getFocused: vi.fn(() => focused),
-			hasOverlay: vi.fn(() => overlayVisible),
+			hasModalOverlay: vi.fn(() => overlayVisible),
 			terminal: { write: terminalWrite, refreshAppearance },
 		} as unknown as InteractiveModeContext["ui"],
 		loadingAnimation: undefined,

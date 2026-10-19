@@ -379,19 +379,19 @@ export class InputController {
 			// focused prompt. Keep focused components' own bindings authoritative.
 			this.ctx.ui.addInputListener(data => {
 				if (this.ctx.keybindings.matches(data, "app.thinking.toggle")) {
-					if (this.ctx.ui.hasOverlay()) return undefined;
+					if (this.ctx.ui.hasModalOverlay()) return undefined;
 					this.ctx.toggleThinkingBlockVisibility();
 					return { consume: true };
 				}
 				if (this.ctx.keybindings.matches(data, "app.history.search")) {
-					if (this.ctx.ui.hasOverlay() || this.ctx.ui.getFocused() instanceof HistorySearchComponent) {
+					if (this.ctx.ui.hasModalOverlay() || this.ctx.ui.getFocused() instanceof HistorySearchComponent) {
 						return undefined;
 					}
 					this.ctx.showHistorySearch();
 					return { consume: true };
 				}
 				if (this.ctx.keybindings.matches(data, "app.editor.external")) {
-					if (this.ctx.ui.hasOverlay()) return undefined;
+					if (this.ctx.ui.hasModalOverlay()) return undefined;
 					const focused = this.ctx.ui.getFocused();
 					if (
 						focused instanceof HookEditorComponent ||
@@ -404,7 +404,7 @@ export class InputController {
 					return { consume: true };
 				}
 				if (this.ctx.keybindings.matches(data, "app.tools.toggleVisibility")) {
-					if (this.ctx.ui.hasOverlay()) return undefined;
+					if (this.ctx.ui.hasModalOverlay()) return undefined;
 					const focused = this.ctx.ui.getFocused();
 					if (
 						focused instanceof TreeSelectorComponent &&
@@ -416,7 +416,7 @@ export class InputController {
 					return { consume: true };
 				}
 				if (this.ctx.keybindings.matches(data, "app.display.reset")) {
-					if (this.ctx.ui.hasOverlay()) return undefined;
+					if (this.ctx.ui.hasModalOverlay()) return undefined;
 					// The tree selector rebinds Alt+L for its `labeled-only` filter
 					// and mounts inline (no overlay), so its own binding stays
 					// authoritative here — same defer as the tools toggle above.
@@ -439,7 +439,7 @@ export class InputController {
 			// rebinds Ctrl+O for its own use (the tree selector's filter cycle).
 			this.ctx.ui.addInputListener(data => {
 				if (!this.ctx.keybindings.matches(data, "app.tools.expand")) return undefined;
-				if (this.ctx.ui.hasOverlay()) return undefined;
+				if (this.ctx.ui.hasModalOverlay()) return undefined;
 				if (this.ctx.ui.getFocused() instanceof TreeSelectorComponent && matchesKey(data, "ctrl+o"))
 					return undefined;
 				const focused = this.ctx.ui.getFocused();
@@ -780,7 +780,7 @@ export class InputController {
 	#handleInlineMouse(data: string): { consume?: boolean; data?: string } | undefined {
 		if (!data.startsWith("\x1b[<")) return undefined;
 		if (!cfgTuiMouse.get(this.ctx.settings)) return undefined;
-		if (this.ctx.ui.hasOverlay()) return undefined;
+		if (this.ctx.ui.hasModalOverlay()) return undefined;
 		const event = parseSgrMouse(data);
 		if (!event) return undefined;
 		if (event.motion) this.#updateHoverHighlight(event.row);

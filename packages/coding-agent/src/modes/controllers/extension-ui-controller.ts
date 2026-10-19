@@ -16,6 +16,7 @@ import type {
 	ExtensionContextActions,
 	ExtensionCustomOptions,
 	ExtensionError,
+	ExtensionStatusOptions,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
@@ -161,7 +162,7 @@ export class ExtensionUiController {
 			approve: (prompt, dialogOptions) => this.showCollabAwareApproval(prompt, dialogOptions),
 			notify: (message, type) => this.showHookNotify(message, type),
 			onTerminalInput: handler => this.addExtensionTerminalInputListener(handler),
-			setStatus: (key, text) => this.setHookStatus(key, text),
+			setStatus: (key, text, options) => this.setHookStatus(key, text, options),
 			setWorkingMessage: message => this.ctx.setWorkingMessage(message),
 			setWidget: (key, content, options) => this.setHookWidget(key, content, options),
 			setTitle: title => setExtensionTerminalTitle(title),
@@ -624,8 +625,27 @@ export class ExtensionUiController {
 	/**
 	 * Set hook status text in the footer.
 	 */
-	setHookStatus(key: string, text: string | undefined): void {
-		this.ctx.statusLine.setHookStatus(key, text);
+	setHookStatus(key: string, text: string | undefined, options?: ExtensionStatusOptions): void {
+		const activate = options?.onActivate;
+		this.ctx.statusLine.setHookStatus(
+			key,
+			text,
+			activate
+				? {
+						...options,
+						onActivate: () => {
+							void Promise.resolve()
+								.then(activate)
+								.catch(error => {
+									this.showHookNotify(
+										`Status "${key}": ${error instanceof Error ? error.message : String(error)}`,
+										"error",
+									);
+								});
+						},
+					}
+				: options,
+		);
 		this.ctx.ui.requestRender();
 	}
 
@@ -1272,7 +1292,7 @@ export class ExtensionUiController {
 	}
 
 	/**
-	 * Show a custom component with keyboard focus.
+	 * Show a custom component. Non-modal overlays leave composer focus unchanged.
 	 */
 	async showHookCustom<T>(
 		factory: (
@@ -1291,8 +1311,10 @@ export class ExtensionUiController {
 		let overlayHandle: OverlayHandle | undefined;
 		let closed = false;
 		let editorReplaced = false;
+		let passive = false;
 
 		const cleanup = () => {
+			const restoreFocus = !passive && (editorReplaced || overlayHandle !== undefined || !options?.overlay);
 			component?.dispose?.();
 			overlayHandle?.hide();
 			overlayHandle = undefined;
@@ -1301,7 +1323,7 @@ export class ExtensionUiController {
 				this.ctx.editorContainer.addChild(this.ctx.editor);
 				this.ctx.editor.setText(savedText);
 			}
-			this.ctx.ui.setFocus(this.ctx.editor);
+			if (restoreFocus) this.ctx.ui.setFocus(this.ctx.editor);
 			this.ctx.ui.requestRender();
 		};
 		const finish = (settle: () => void) => {
@@ -1334,6 +1356,7 @@ export class ExtensionUiController {
 				if (options?.overlay) {
 					const overlayOptions =
 						typeof options.overlayOptions === "function" ? options.overlayOptions() : options.overlayOptions;
+					passive = overlayOptions?.nonModal === true && overlayOptions.fullscreen !== true;
 					overlayHandle = this.ctx.ui.showOverlay(
 						component,
 						overlayOptions ?? {

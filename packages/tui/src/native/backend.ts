@@ -185,6 +185,10 @@ class NativeContext implements DescribeContext {
 		return this.#kinds.has(kind);
 	}
 
+	get stylesheets(): boolean {
+		return this.#features.has("styles");
+	}
+
 	feature(name: string): boolean {
 		return this.#features.has(name);
 	}
@@ -207,7 +211,7 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
  * once the real `hello` lists them, so the optimistic start never emits a node
  * an older terminal cannot draw (`media`: files Tern loads by path).
  */
-const UNASSUMED_KINDS: Partial<Record<TspKind, true>> = { media: true };
+const UNASSUMED_KINDS: Partial<Record<TspKind, true>> = { media: true, el: true };
 
 /**
  * The reply a v1 terminal is assumed to give before its real `hello` arrives
@@ -246,6 +250,8 @@ class Surface {
 	unacked: number[] = [];
 	focus: string | null = null;
 	dirty = false;
+	/** Per-connection sheet versions; declarations themselves live in the reconciler. */
+	readonly stylesSent = new Map<string, string>();
 
 	constructor(id: string, mode: "inline" | "screen", role: string, mirror: boolean) {
 		this.id = id;
@@ -409,6 +415,16 @@ export class NativeBackend {
 		if (this.#screen) this.#sendPalette(this.#screen);
 	}
 
+	/** Install changed declarations before any frame that can refer to them. */
+	#sendStyles(surface: Surface): void {
+		if (!this.#cx.feature("styles")) return;
+		for (const [name, css] of surface.reconciler.styles) {
+			if (surface.stylesSent.get(name) === css) continue;
+			this.#write("s", { sf: surface.id, name, css });
+			surface.stylesSent.set(name, css);
+		}
+	}
+
 	/**
 	 * Tern's font carries every Nerd Font glyph, and it never answers the Glyph
 	 * Protocol, so icons come from the nerd preset (process-local, not the
@@ -460,6 +476,8 @@ export class NativeBackend {
 		surface.dirty = false;
 		this.#write("o", { id: surface.id, mode: "inline", title: "omp", role: SESSION_ROLE, adopt: true });
 		this.#sendPalette(surface);
+		surface.stylesSent.clear();
+		this.#sendStyles(surface);
 		// After the `o`, as in `start()`.
 		setNativeRendering(true);
 		this.render();
@@ -550,6 +568,7 @@ export class NativeBackend {
 		}
 		surface.dirty = false;
 		const ops = surface.reconciler.reconcile({ main, dock, layer }, this.#cx);
+		this.#sendStyles(surface);
 		const focused = this.#host.focused();
 		const focus = focused ? surface.reconciler.focusTarget(focused) : null;
 		if (focus !== surface.focus) {
@@ -602,6 +621,8 @@ export class NativeBackend {
 	#open(surface: Surface): void {
 		this.#write("o", { id: surface.id, mode: surface.mode, title: "omp", role: surface.role });
 		this.#sendPalette(surface);
+		surface.stylesSent.clear();
+		this.#sendStyles(surface);
 	}
 
 	#close(surface: Surface, keep: boolean): void {
@@ -764,7 +785,7 @@ export class NativeBackend {
 		}
 	}
 
-	#write(verb: "o" | "f" | "t" | "x" | "q", body: unknown): void {
+	#write(verb: "o" | "f" | "t" | "s" | "x" | "q", body: unknown): void {
 		this.#record("out", verb, undefined, body);
 		this.#host.terminal.write(encodeTspJson(verb, body, undefined, this.#limit));
 	}
@@ -884,16 +905,44 @@ export class NativeBackend {
 				ui = { type: "toggle", key: target.keypath, collapsed: event.collapsed };
 				break;
 			case "select":
-				ui = { type: "select", key: target.keypath, item: item(event.item) };
+				ui = {
+					type: "select",
+					key: target.keypath,
+					item: item(event.item),
+					...(event.values && { values: event.values }),
+				};
 				break;
 			case "activate":
-				ui = { type: "activate", key: target.keypath, item: item(event.item) };
+				ui = {
+					type: "activate",
+					key: target.keypath,
+					item: item(event.item),
+					...(event.values && { values: event.values }),
+				};
 				break;
 			case "action":
-				ui = { type: "action", key: target.keypath, act: event.act, value: event.value, mods: event.mods ?? [] };
+				ui = {
+					type: "action",
+					key: target.keypath,
+					act: event.act,
+					value: event.value,
+					mods: event.mods ?? [],
+					...(event.values && { values: event.values }),
+				};
 				break;
 			case "change":
-				ui = { type: "change", key: target.keypath, item: event.item, value: event.value };
+				ui =
+					"checked" in event
+						? {
+								type: "change",
+								key: target.keypath,
+								item: "",
+								value: event.value,
+								checked: event.checked,
+								...(event.name !== undefined && { name: event.name }),
+								...(event.values && { values: event.values }),
+							}
+						: { type: "change", key: target.keypath, item: event.item, value: event.value };
 				break;
 			case "edit": {
 				const { from, to, text, cursor, len } = event;
@@ -920,7 +969,7 @@ export class NativeBackend {
 		const own = overlay.component.nativeOverlay;
 		const anchor = own?.anchor ?? overlayAnchor(overlay.options);
 		const size = own?.size ?? overlaySize(overlay.options, this.#cx.cols);
-		const modal = overlay.focused || overlay.options?.fullscreen === true;
+		const modal = overlay.options?.fullscreen === true || (overlay.options?.nonModal !== true && overlay.focused);
 		const role = own?.role;
 		const head = own?.head;
 		const key = `${anchor}|${size}|${modal}|${role}|${JSON.stringify(head)}`;

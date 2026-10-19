@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added passive custom popups through `ctx.ui.custom(..., { overlay: true, overlayOptions: { nonModal: true } })`. Composer shortcuts remain available, and popup cleanup preserves the current focus and draft.
+- Exposed `pi.pi.nativeImageNode` to extensions. Native images use the host's blob registry without loading another TUI runtime.
+- Added exact-name tool presentation factories so extensions can customize an existing tool's rendering without replacing its implementation.
+- Added native extension status labels, progress meters and activation callbacks while retaining text-terminal and RPC fallback text.
+
+
 ### Fixed
 
 - Fixed a Codex turn stopping on "Request failed … unsupported_native_inflight_message" when you sent a message while the response was writing text; the session now keeps the partial reply and continues with your message

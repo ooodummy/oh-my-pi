@@ -8,7 +8,7 @@
  *     ESC _ tsp ; <verb> [; <key>=<value>]* ; <body> ESC \
  *
  * `body` is UTF-8 JSON (base64 for blob chunks). Program → terminal verbs:
- * `q` query, `o` open, `f` frame, `b` blob, `t` palette, `x` close. Terminal →
+ * `q` query, `o` open, `f` frame, `b` blob, `t` palette, `s` stylesheet, `x` close. Terminal →
  * program: `r` reply, `e` event (on the pty's input side).
  *
  * The normative spec is the Tern SDK's Surface Protocol and Elements reference
@@ -28,7 +28,7 @@ export const TSP_DEFAULT_APC_LIMIT = 65_536;
 export const TSP_DEFAULT_CREDITS = 2;
 
 /** One-letter message verb. */
-export type TspVerb = "q" | "o" | "f" | "b" | "t" | "x" | "r" | "e";
+export type TspVerb = "q" | "o" | "f" | "b" | "t" | "s" | "x" | "r" | "e";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Vocabulary
@@ -43,6 +43,7 @@ export const TSP_KINDS = [
 	"rule",
 	"spacer",
 	"text",
+	"el",
 	"md",
 	"code",
 	"diff",
@@ -203,6 +204,75 @@ export interface TspTextProps {
 	lines?: number;
 	measure?: "prose" | "fill";
 }
+
+/** Fixed safe element vocabulary; unsupported tags are diagnosed by Tern and draw as a div. */
+export type TspElTag =
+	| "div"
+	| "span"
+	| "p"
+	| "section"
+	| "header"
+	| "footer"
+	| "nav"
+	| "aside"
+	| "main"
+	| "article"
+	| "figure"
+	| "blockquote"
+	| "ul"
+	| "ol"
+	| "li"
+	| "dl"
+	| "dt"
+	| "dd"
+	| "h1"
+	| "h2"
+	| "h3"
+	| "h4"
+	| "pre"
+	| "code"
+	| "kbd"
+	| "strong"
+	| "b"
+	| "em"
+	| "i"
+	| "del"
+	| "mark"
+	| "hr"
+	| "table"
+	| "thead"
+	| "tbody"
+	| "tr"
+	| "th"
+	| "td"
+	| "label"
+	| "button"
+	| "form"
+	| "input";
+
+/** A renderer-owned element, not browser HTML: no scripts, inline styles or arbitrary attributes. */
+export interface TspElProps {
+	/** Defaults to div. Form groups controls but draws as a div. */
+	tag?: TspElTag;
+	/** Space-separated author classes; sf and sf-* are reserved and dropped by Tern. */
+	class?: string;
+	/**
+	 * Only data-*, aria-*, role, colspan and rowspan are accepted; renderer-owned
+	 * attributes (including data-id, data-scope and aria-label) cannot be overridden.
+	 */
+	attrs?: Readonly<Record<string, string | number | boolean>>;
+	/** Plain primary text before children (ignored by hr and input). */
+	text?: string;
+	/** Input is a pointer-only checkbox/radio, never a text field. */
+	type?: "checkbox" | "radio";
+	name?: string;
+	value?: string;
+	checked?: boolean;
+	disabled?: boolean;
+}
+
+/** Values of enabled, named controls in the nearest el form. */
+export type TspFormValues = Readonly<Record<string, string | boolean | readonly string[] | null>>;
 export interface TspMarkdownProps {
 	text?: string;
 	/** The tail is still arriving. */
@@ -827,6 +897,7 @@ export interface TspPropsByKind {
 	rule: TspRuleProps;
 	spacer: TspSpacerProps;
 	text: TspTextProps;
+	el: TspElProps;
 	md: TspMarkdownProps;
 	code: TspCodeProps;
 	diff: TspDiffProps;
@@ -869,7 +940,7 @@ export interface TspPropsByKind {
 export type TspProps<K extends TspKind = TspKind> = TspPropsByKind[K] & TspCommonProps;
 
 /** Kinds whose primary text the `text` and `splice` ops address (the `text` prop). */
-export const TSP_TEXT_KINDS = ["text", "md", "code", "ansi", "math", "editor", "input", "shimmer"] as const;
+export const TSP_TEXT_KINDS = ["text", "el", "md", "code", "ansi", "math", "editor", "input", "shimmer"] as const;
 
 /** A node on the wire. */
 export type TspNode = {
@@ -944,6 +1015,18 @@ export interface TspPalette {
 	name?: { dark?: string; light?: string };
 }
 
+/**
+ * Verb s (feature styles): install or replace a surface-confined sheet.
+ * Names are 1–64 ASCII letters, digits, underscores or hyphens. Empty/null CSS
+ * removes it; all sheets together may hold at most 256 KiB of UTF-8 CSS.
+ * Sheets keep their cascade order on replacement and survive surface close.
+ */
+export interface TspStylesheet {
+	sf?: string;
+	name: string;
+	css?: string | null;
+}
+
 /** Verb `q`. */
 export type TspQuery =
 	| { q: "hello"; v: readonly number[]; app: string; ver?: string; features?: readonly string[] }
@@ -977,9 +1060,17 @@ export type TspEvent =
 	| { ev: "motion"; reduce: boolean }
 	| { ev: "visible"; sf?: string; visible: boolean }
 	| { ev: "toggle"; sf: string; id: string; key?: string; collapsed: boolean }
-	| { ev: "select"; sf: string; id: string; item: string }
-	| { ev: "activate"; sf: string; id: string; item: string }
-	| { ev: "action"; sf: string; id: string; act: string; value?: string; mods?: readonly string[] }
+	| { ev: "select"; sf: string; id: string; item: string; values?: TspFormValues }
+	| { ev: "activate"; sf: string; id: string; item: string; values?: TspFormValues }
+	| {
+			ev: "action";
+			sf: string;
+			id: string;
+			act: string;
+			value?: string;
+			mods?: readonly string[];
+			values?: TspFormValues;
+	  }
 	/** A typed value changed by pointer (prefs rows, picker toggles); `null` resets to the default. */
 	| {
 			ev: "change";
@@ -987,6 +1078,16 @@ export type TspEvent =
 			id: string;
 			item: string;
 			value: boolean | number | string | readonly string[] | null;
+	  }
+	/** An el checkbox/radio flipped; controls do not have a prefs/picker item id. */
+	| {
+			ev: "change";
+			sf: string;
+			id: string;
+			name?: string;
+			value: string;
+			checked: boolean;
+			values?: TspFormValues;
 	  }
 	/**
 	 * An edit over the terminal's selection in an `editor`/`input` node: replace
@@ -1016,5 +1117,5 @@ export type TspEvent =
 	 * keyboard focus there, or ignores it (a modal overlay keeps the keys).
 	 */
 	| { ev: "focus"; sf: string; id: string }
-	| { ev: "error"; sf?: string; s?: number; op?: number; msg: string }
+	| { ev: "error"; sf?: string; s?: number; op?: number; id?: string; sheet?: string; msg: string }
 	| { ev: "gone"; sf?: string; ids: readonly string[] };

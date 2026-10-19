@@ -479,6 +479,11 @@ export interface OverlayOptions {
 	 * Called each render cycle with current terminal dimensions.
 	 */
 	visible?: (termWidth: number, termHeight: number) => boolean;
+	/**
+	 * Keep keyboard focus and the composer cursor unchanged while this overlay is visible.
+	 * Pointer actions still work without taking keyboard focus. Ignored for fullscreen overlays.
+	 */
+	nonModal?: boolean;
 
 	// === Fullscreen ===
 	/**
@@ -1287,14 +1292,17 @@ export class TUI extends Container {
 	 */
 	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle {
 		component.setIgnoreTight?.(true);
+		const passive = options?.nonModal === true && options.fullscreen !== true;
 		const entry = { component, options, preFocus: this.#focusedComponent, hidden: false, released: false };
 		this.overlayStack.push(entry);
 		// Only focus if overlay is actually visible
-		if (this.#isOverlayVisible(entry)) {
+		if (!passive && this.#isOverlayVisible(entry)) {
 			this.setFocus(component);
 		}
-		this.terminal.hideCursor();
-		this.#recordHardwareCursorHidden();
+		if (!passive) {
+			this.terminal.hideCursor();
+			this.#recordHardwareCursorHidden();
+		}
 		this.requestRender();
 
 		// Return handle for controlling this overlay
@@ -1304,10 +1312,10 @@ export class TUI extends Container {
 				if (index !== -1) {
 					this.overlayStack.splice(index, 1);
 					// Restore focus if this overlay or one of its owned targets had focus
-					if (isOverlayFocusTarget(component, this.#focusedComponent)) {
+					if (!passive && isOverlayFocusTarget(component, this.#focusedComponent)) {
 						this.setFocus(this.#getKeyHolderOverlay()?.component ?? entry.preFocus);
 					}
-					if (this.overlayStack.length === 0) {
+					if (!passive && this.overlayStack.length === 0) {
 						this.terminal.hideCursor();
 						this.#recordHardwareCursorHidden();
 					}
@@ -1318,12 +1326,12 @@ export class TUI extends Container {
 				if (entry.hidden === hidden) return;
 				entry.hidden = hidden;
 				// Update focus when hiding/showing
-				if (hidden) {
+				if (hidden && !passive) {
 					// If this overlay or one of its owned targets had focus, move focus to the next one holding keys or preFocus
 					if (isOverlayFocusTarget(component, this.#focusedComponent)) {
 						this.setFocus(this.#getKeyHolderOverlay()?.component ?? entry.preFocus);
 					}
-				} else {
+				} else if (!passive) {
 					// Restore focus to this overlay when showing (if it's actually visible)
 					if (this.#isOverlayVisible(entry)) {
 						this.setFocus(component);
@@ -1339,11 +1347,12 @@ export class TUI extends Container {
 	hideOverlay(): void {
 		const overlay = this.overlayStack.pop();
 		if (!overlay) return;
-		// Find the topmost visible overlay holding keys, or fall back to preFocus
-		this.setFocus(this.#getKeyHolderOverlay()?.component ?? overlay.preFocus);
-		if (this.overlayStack.length === 0) {
-			this.terminal.hideCursor();
-			this.#recordHardwareCursorHidden();
+		if (!(overlay.options?.nonModal && !overlay.options.fullscreen)) {
+			this.setFocus(this.#getKeyHolderOverlay()?.component ?? overlay.preFocus);
+			if (this.overlayStack.length === 0) {
+				this.terminal.hideCursor();
+				this.#recordHardwareCursorHidden();
+			}
 		}
 		this.requestRender();
 	}
@@ -1351,6 +1360,13 @@ export class TUI extends Container {
 	/** Check if there are any visible overlays */
 	hasOverlay(): boolean {
 		return this.overlayStack.some(o => this.#isOverlayVisible(o));
+	}
+
+	/** Check for visible overlays that reserve composer shortcuts. Passive overlays do not. */
+	hasModalOverlay(): boolean {
+		return this.overlayStack.some(
+			entry => !(entry.options?.nonModal && !entry.options.fullscreen) && this.#isOverlayVisible(entry),
+		);
 	}
 
 	/**
@@ -1445,7 +1461,12 @@ export class TUI extends Container {
 	#getKeyHolderOverlay(): (typeof this.overlayStack)[number] | undefined {
 		for (let i = this.overlayStack.length - 1; i >= 0; i--) {
 			const entry = this.overlayStack[i];
-			if (!entry.released && this.#isOverlayVisible(entry)) return entry;
+			if (
+				!(entry.options?.nonModal && !entry.options.fullscreen) &&
+				!entry.released &&
+				this.#isOverlayVisible(entry)
+			)
+				return entry;
 		}
 		return undefined;
 	}
@@ -1463,7 +1484,20 @@ export class TUI extends Container {
 		field: Component | null,
 		sheet: (overlay: Component) => boolean,
 	): void {
-		const visible = this.overlayStack.filter(entry => this.#isOverlayVisible(entry));
+		const visible = this.overlayStack.filter(
+			entry => !(entry.options?.nonModal && !entry.options.fullscreen) && this.#isOverlayVisible(entry),
+		);
+		// Passive controls still receive actions, but never become keyboard owners.
+		if (
+			this.overlayStack.some(
+				entry =>
+					entry.options?.nonModal &&
+					!entry.options.fullscreen &&
+					this.#isOverlayVisible(entry) &&
+					owners.some(owner => isOverlayFocusTarget(entry.component, owner)),
+			)
+		)
+			return;
 		const overlay = visible.findLast(entry => owners.some(owner => isOverlayFocusTarget(entry.component, owner)));
 		if (overlay) {
 			if (!isOverlayFocusTarget(overlay.component, this.#focusedComponent)) this.setFocus(overlay.component);
@@ -2958,8 +2992,8 @@ export class TUI extends Container {
 		// target the effective focus owner, not a hidden overlay.
 		const focusedOverlay = this.overlayStack.find(o => o.component === this.#focusedComponent);
 		if (focusedOverlay && !this.#isOverlayVisible(focusedOverlay)) {
-			// Focused overlay is no longer visible, redirect to topmost visible overlay
-			const topVisible = this.#getTopmostVisibleOverlay();
+			// Restore a keyboard owner, never a passive decoration above it.
+			const topVisible = this.#getKeyHolderOverlay();
 			if (topVisible) {
 				this.setFocus(topVisible.component);
 			} else {
@@ -3790,16 +3824,15 @@ export class TUI extends Container {
 		// Fullscreen alt-screen short-circuit. While the topmost visible overlay
 		// requests it, borrow the terminal's alternate buffer and paint only the
 		// modal there; the normal screen and all accounting stay untouched.
-		const topOverlay = this.#getTopmostVisibleOverlay();
+		const topOverlay = this.#getKeyHolderOverlay() ?? this.#getTopmostVisibleOverlay();
 		const wantAlt = topOverlay?.options?.fullscreen === true;
-		const wantMouse: MouseTrackingState =
-			topOverlay === undefined
-				? this.#inlineMouseProvider?.() === true
-					? "inline"
-					: "off"
-				: wantAlt && topOverlay.options?.mouseTracking !== false
-					? "full"
-					: "off";
+		const wantMouse: MouseTrackingState = !this.hasModalOverlay()
+			? this.#inlineMouseProvider?.() === true
+				? "inline"
+				: "off"
+			: wantAlt && topOverlay?.options?.mouseTracking !== false
+				? "full"
+				: "off";
 		if (wantAlt && !this.#altActive) {
 			// Enhanced keyboard modes can be buffer-local: re-push the active
 			// modified-key reporting sequence on the freshly entered alternate
@@ -4405,7 +4438,7 @@ export class TUI extends Container {
 		} while (this.#imageBudget.endPass());
 		const markers: { row: number; col: number }[] = [];
 		const prepared = this.#prepareLinesArray(lines, width, this.#altPreparedRows, height, markers);
-		const topOverlay = this.#getTopmostVisibleOverlay();
+		const topOverlay = this.#getKeyHolderOverlay() ?? this.#getTopmostVisibleOverlay();
 		const focused = this.#focusedComponent;
 		const acceptsTerminalCursor =
 			topOverlay !== undefined &&

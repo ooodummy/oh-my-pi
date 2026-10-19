@@ -11,6 +11,8 @@ import { ExtensionUiController } from "../../../src/modes/controllers/extension-
 import { InputController } from "../../../src/modes/controllers/input-controller";
 import { getEditorTheme, getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../../../src/modes/types";
+import { createStartupStatusLine } from "@oh-my-pi/pi-tui/status-line/startup";
+import type { NativeNode } from "@oh-my-pi/pi-tui/native/node";
 
 afterEach(() => {
 	setKeybindings(KeybindingsManager.inMemory());
@@ -43,11 +45,21 @@ function makeHarness() {
 	};
 	const showOverlay = vi.fn(() => fakeHandle);
 	let uiContext: ExtensionUIContext | undefined;
+	const statusLine = createStartupStatusLine({
+		settings: { preset: "custom", leftSegments: [], rightSegments: [] },
+		gitEnabled: false,
+		autoThinking: false,
+		fastMode: false,
+		usingSubscription: false,
+		autoCompactEnabled: false,
+		compactionBoundaries: null,
+	});
 	// A real agent-core queue: approvals track and reorder its steering messages.
 	const agent = new Agent();
 	const steeringChips = () =>
 		agent.peekSteeringQueue().map(message => (message.role === "user" ? String(message.content) : ""));
 	const ctx = {
+		statusLine,
 		editor,
 		ui: {
 			requestRender,
@@ -79,6 +91,7 @@ function makeHarness() {
 
 	return {
 		editor,
+		statusLine,
 		requestRender,
 		addAutocompleteProvider,
 		editorContainer,
@@ -458,6 +471,58 @@ describe("ExtensionUiController custom overlay", () => {
 		for (let i = 0; i < 3; i++) await Promise.resolve();
 	};
 
+	it("keeps a passive custom popup pending while the composer remains usable and closes without restoring stale focus", async () => {
+		const harness = makeHarness();
+		const ui = await harness.init();
+		let done: ((value: string) => void) | undefined;
+		const component = new Container() as Container & { dispose: Mock<() => void> };
+		component.dispose = vi.fn();
+		const pending = ui.custom<string>(
+			(_tui, _theme, _keys, close) => {
+				done = close;
+				return component;
+			},
+			{
+				overlay: true,
+				overlayOptions: { nonModal: true, anchor: "top-center", width: 44 },
+			},
+		);
+		await flushMicrotasks();
+		harness.handleInput("draft typed while popup is open");
+		const current = new Container();
+		harness.setFocus(current);
+		harness.setFocus.mockClear();
+		if (!done) throw new Error("No popup close callback");
+		done("closed");
+		done("ignored");
+		expect(await pending).toBe("closed");
+		expect(harness.editor.getText()).toBe("draft typed while popup is open");
+		expect(harness.editorContainer.children).toEqual([harness.editor]);
+		expect(harness.getFocused()).toBe(current);
+		expect(harness.setFocus).not.toHaveBeenCalled();
+		expect(component.dispose).toHaveBeenCalledTimes(1);
+		expect(harness.fakeHandle.hide).toHaveBeenCalledTimes(1);
+	});
+
+	it("aborts a passive popup without taking focus from another active component", async () => {
+		const harness = makeHarness();
+		const ui = await harness.init();
+		const controller = new AbortController(),
+			current = new Container();
+		const pending = ui.custom(() => new Container(), {
+			overlay: true,
+			overlayOptions: { nonModal: true },
+			signal: controller.signal,
+		});
+		await flushMicrotasks();
+		harness.setFocus(current);
+		harness.setFocus.mockClear();
+		controller.abort();
+		await expect(pending).rejects.toBe(controller.signal.reason);
+		expect(harness.getFocused()).toBe(current);
+		expect(harness.setFocus).not.toHaveBeenCalled();
+		expect(harness.fakeHandle.hide).toHaveBeenCalledTimes(1);
+	});
 	it("forwards overlayOptions to showOverlay and invokes onHandle", async () => {
 		const harness = makeHarness();
 		const ui = await harness.init();
@@ -685,5 +750,64 @@ describe("ExtensionUiController tool approval", () => {
 		expect(body()).not.toContain("rm-rf~");
 		harness.handleInput("\x0f");
 		expect(body()).toContain("rm-rf~");
+	});
+});
+
+/** Locate the extension's interactive status in the real native composer. */
+function statusAction(root: NativeNode): string | undefined {
+	if (root.p?.actions?.click?.startsWith("status.extension.")) return root.p.actions.click;
+	for (const child of root.c ?? []) {
+		if (!("k" in child)) continue;
+		const action = statusAction(child);
+		if (action) return action;
+	}
+	return undefined;
+}
+
+describe("ExtensionUiController native status activation", () => {
+	it("opens extension UI directly without adding a model turn or steering message", async () => {
+		const harness = makeHarness();
+		const ui = await harness.init();
+		let opened = 0;
+		ui.setStatus("index", "◔ Indexing", {
+			label: "Indexing",
+			progress: 0.731,
+			onActivate: async () => {
+				opened++;
+			},
+		});
+		const action = statusAction(harness.statusLine.describeComposerFacts().extras);
+		expect(action).toBeDefined();
+		harness.statusLine.handleNativeEvent({ type: "action", key: "", act: action!, mods: [] });
+		await Promise.resolve();
+		expect(opened).toBe(1);
+		expect(harness.agent.peekSteeringQueue()).toEqual([]);
+		expect(harness.agent.state.messages).toEqual([]);
+		ui.setStatus("index", "Regular status");
+		expect(statusAction(harness.statusLine.describeComposerFacts().extras)).toBeUndefined();
+		harness.statusLine.handleNativeEvent({ type: "action", key: "", act: action!, mods: [] });
+		await Promise.resolve();
+		expect(opened).toBe(1);
+	});
+
+	it("reports rejected activation callbacks without an unhandled rejection", async () => {
+		const harness = makeHarness();
+		const ui = await harness.init();
+		const notified = Promise.withResolvers<void>();
+		const notify = vi.spyOn(harness.controller, "showHookNotify").mockImplementation(() => {
+			notified.resolve();
+		});
+		ui.setStatus("index", "Unavailable", {
+			icon: "warning",
+			tone: "error",
+			onActivate: async () => {
+				throw new Error("Overview unavailable");
+			},
+		});
+		const action = statusAction(harness.statusLine.describeComposerFacts().extras)!;
+		harness.statusLine.handleNativeEvent({ type: "action", key: "", act: action, mods: [] });
+		await notified.promise;
+		expect(notify).toHaveBeenCalledWith('Status "index": Overview unavailable', "error");
+		expect(harness.agent.peekSteeringQueue()).toEqual([]);
 	});
 });

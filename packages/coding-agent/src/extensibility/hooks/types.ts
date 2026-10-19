@@ -5,6 +5,7 @@ import type * as TypeBox from "@oh-my-pi/omptype/typebox";
 import type * as zod from "@oh-my-pi/omptype/zod";
 import type { ImageContent, Message, Model, TextContent } from "@oh-my-pi/pi-ai";
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
+import type { ExtensionStatusOptions } from "@oh-my-pi/pi-tui/status-line/extension-status";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -98,7 +99,7 @@ export interface HookUIContext {
 	 * @param key - Unique key to identify this status (e.g., hook name)
 	 * @param text - Status text to display, or undefined to clear
 	 */
-	setStatus(key: string, text: string | undefined): void;
+	setStatus(key: string, text: string | undefined, options?: ExtensionStatusOptions): void;
 
 	/**
 	 * Show a custom component with keyboard focus.

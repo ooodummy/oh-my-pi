@@ -201,6 +201,20 @@ queue early. The
 debug socket's `doc` op returns the reference document
 (every sent frame applied by `native/apply.ts`), and `tsp` returns recent frames.
 
+Components may attach `styles: readonly NativeStylesheet[]` (`{ name, css }`)
+to any `NativeNode`. The reconciler retains named declarations for the surface
+lifetime, independently of memoized nodes and released settled descriptions.
+The backend sends changed `s` sheets before dependent frames, deduplicates
+same-name/same-CSS declarations per surface, and replays retained sheets on
+adoption. Replacement keeps cascade order; component removal does not remove a
+sheet. Names and the 256 KiB UTF-8 surface limit are checked before transport;
+CSS syntax/constraint errors remain renderer diagnostics in the ordinary TSP
+error log. Styles are sent only when the real `hello` advertises `styles`, and
+`el` is never part of the optimistic vocabulary. Styled components must check
+both `cx.supports("el")` and `cx.stylesheets === true`, keeping their row fallback.
+See [extension use](./extensions.md#native-elements-and-scoped-styles).
+
+
 #### Explicit composer submission
 
 omp's `q: "hello"` advertises `features: ["edit", "undo", "send"]`.

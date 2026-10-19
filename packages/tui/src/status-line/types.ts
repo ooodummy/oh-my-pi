@@ -1,6 +1,6 @@
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { SessionState, TspSpan, TspTone } from "@oh-my-pi/pi-wire";
-import type { NativeNode, NativeUiEvent } from "../native/node";
+import type { DescribeContext, NativeNode, NativeUiEvent } from "../native/node";
 import type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "./schema";
 import type { ActiveRepoContext, StatusLineSession } from "./host";
 import type { LoopConditionConfig, LoopLimitRuntime } from "./loop";
@@ -261,7 +261,7 @@ export interface ComposerFacts {
 
 /** Supplies {@link ComposerFacts} and takes the clicks on them (`status.*` actions). */
 export interface ComposerFactsSource {
-	describeComposerFacts(): ComposerFacts;
+	describeComposerFacts(cx?: Pick<DescribeContext, "reduceMotion">): ComposerFacts;
 	handleNativeEvent(event: NativeUiEvent): void;
 }
 

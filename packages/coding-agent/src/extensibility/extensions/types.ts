@@ -37,6 +37,8 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ContextUsage } from "@oh-my-pi/pi-tui/status-line/types";
+import type { ExtensionStatusOptions } from "@oh-my-pi/pi-tui/status-line/extension-status";
+export type { ExtensionStatusOptions } from "@oh-my-pi/pi-tui/status-line/extension-status";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type {
 	Api,
@@ -248,7 +250,7 @@ export interface ExtensionWidgetOptions {
 export interface ExtensionCustomOptions {
 	/** Render the component as an overlay over the transcript instead of replacing the editor area. */
 	overlay?: boolean;
-	/** Static or lazily resolved overlay positioning/sizing options forwarded to `showOverlay`. */
+	/** Static or lazily resolved overlay options. Set `nonModal: true` to keep the composer active. */
 	overlayOptions?: OverlayOptions | (() => OverlayOptions);
 	/** Invoked with the overlay handle once the overlay is created (overlay mode only). */
 	onHandle?: (handle: OverlayHandle) => void;
@@ -322,8 +324,8 @@ export interface ExtensionUIContext {
 	/** Listen to raw terminal input (interactive mode only). Returns an unsubscribe function. */
 	onTerminalInput(handler: TerminalInputHandler): () => void;
 
-	/** Set status text in the footer/status bar. Pass undefined to clear. */
-	setStatus(key: string, text: string | undefined): void;
+	/** Set fallback status text and optional native presentation. Each call replaces prior metadata; undefined clears. */
+	setStatus(key: string, text: string | undefined, options?: ExtensionStatusOptions): void;
 
 	/** Set the working/loading message shown during streaming. Call with no argument to restore default. */
 	setWorkingMessage(message?: string): void;
